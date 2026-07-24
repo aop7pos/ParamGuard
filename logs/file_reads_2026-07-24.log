@@ -1,0 +1,10 @@
+{"timestamp": "2026-07-24T07:52:48.993148+00:00", "path": "C:\\Users\\20669\\Documents\\ParamGuard\\tests\\tmpt57shdva\\content.txt", "success": true, "error": ""}
+{"timestamp": "2026-07-24T07:52:48.996083+00:00", "path": "C:\\Users\\20669\\Documents\\ParamGuard\\tests\\tmpvgj8hbo8", "success": false, "error": "指定路径是目录，无法读取文件内容: C:\\Users\\20669\\Documents\\ParamGuard\\tests\\tmpvgj8hbo8"}
+{"timestamp": "2026-07-24T07:52:48.997538+00:00", "path": "", "success": false, "error": "文件路径不能为空"}
+{"timestamp": "2026-07-24T07:52:48.999227+00:00", "path": "C:\\Users\\20669\\Documents\\ParamGuard\\tests\\tmpzcaa_q8a\\missing.txt", "success": false, "error": "文件不存在: C:\\Users\\20669\\Documents\\ParamGuard\\tests\\tmpzcaa_q8a\\missing.txt"}
+{"timestamp": "2026-07-24T07:52:49.000698+00:00", "path": "tests/good.txt\u0000hidden.txt", "success": false, "error": "文件路径包含非法字符（空字节）"}
+{"timestamp": "2026-07-24T07:52:49.002960+00:00", "path": "C:\\Users\\20669\\AppData\\Local\\Temp\\tmpddtfkk0b\\secret.txt", "success": false, "error": "不允许读取该路径（试图访问 tests/ 目录之外的文件）: C:\\Users\\20669\\AppData\\Local\\Temp\\tmpddtfkk0b\\secret.txt"}
+{"timestamp": "2026-07-24T07:52:49.005157+00:00", "path": "C:\\Users\\20669\\Documents\\ParamGuard\\agent\\file_reader.py", "success": false, "error": "不允许读取该路径（试图访问 tests/ 目录之外的文件）: C:\\Users\\20669\\Documents\\ParamGuard\\tests\\..\\agent\\file_reader.py"}
+{"timestamp": "2026-07-24T07:52:49.018263+00:00", "path": "C:\\Users\\20669\\Documents\\ParamGuard\\tests\\tmpafn3hvzl\\content.txt", "success": true, "error": ""}
+{"timestamp": "2026-07-24T07:52:49.020370+00:00", "path": "", "success": false, "error": "文件路径不能为空"}
+{"timestamp": "2026-07-24T07:52:49.021594+00:00", "path": "C:\\Users\\20669\\Documents\\ParamGuard\\tests\\tmp4y68msgn\\ok.txt", "success": true, "error": ""}

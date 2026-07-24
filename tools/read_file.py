@@ -12,6 +12,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from agent.file_reader import read_file_content
+from agent.logger import log_file_read
 
 
 def main() -> int:
@@ -61,6 +62,7 @@ def main() -> int:
             return 1
     except Exception as error:
         # 捕获所有未预期的异常（如系统级错误），使用标准错误流输出。
+        log_file_read(path=args.path, success=False, error=str(error))
         print(f"读取文件失败: {error}", file=sys.stderr)
         return 1
 
