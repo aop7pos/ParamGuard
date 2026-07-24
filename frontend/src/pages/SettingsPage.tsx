@@ -1,8 +1,17 @@
+import { useEffect, useState } from 'react';
 import { mockSystemStatus } from '@/services/mockData';
+import { fetchSystemStatus } from '@/services/dataService';
 import { Activity, Cpu, Mail, Server } from 'lucide-react';
+import type { SystemStatus } from '@/types';
 
 export default function SettingsPage() {
-  const s = mockSystemStatus;
+  const [status, setStatus] = useState<SystemStatus>(mockSystemStatus);
+
+  useEffect(() => {
+    fetchSystemStatus().then(setStatus).catch(() => {});
+  }, []);
+
+  const s = status;
 
   return (
     <div className="p-6 max-w-3xl animate-fade-in">

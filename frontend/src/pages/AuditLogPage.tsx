@@ -1,13 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, ChevronRight, ShieldCheck } from 'lucide-react';
 import { mockAuditLogs } from '@/services/mockData';
+import { fetchAuditLogs } from '@/services/dataService';
 import { formatTime, riskColor, riskLabel } from '@/utils/format';
 import { formatJson } from '@/utils/format';
 import type { AuditLogEntry } from '@/types';
 
 export default function AuditLogPage() {
+  const [logs, setLogs] = useState<AuditLogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<AuditLogEntry | null>(null);
+
+  useEffect(() => {
+    fetchAuditLogs()
+      .then(setLogs)
+      .catch(() => setLogs(mockAuditLogs))
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
     <div className="p-6 max-w-4xl animate-fade-in flex flex-col h-full">
@@ -17,7 +27,12 @@ export default function AuditLogPage() {
       </div>
 
       <div className="flex-1 overflow-y-auto border border-border-primary rounded-lg">
-        {mockAuditLogs.map((log) => (
+        {loading ? (
+          <div className="px-4 py-12 text-center text-text-muted text-sm">加载中…</div>
+        ) : logs.length === 0 ? (
+          <div className="px-4 py-12 text-center text-text-muted text-sm">暂无审计记录</div>
+        ) : (
+          logs.map((log) => (
           <div
             key={log.auditId}
             onClick={() => setSelected(log)}
@@ -35,7 +50,8 @@ export default function AuditLogPage() {
               <ChevronRight className="w-4 h-4 text-text-muted" />
             </div>
           </div>
-        ))}
+          ))
+        )}
       </div>
 
       {/* Detail Drawer */}

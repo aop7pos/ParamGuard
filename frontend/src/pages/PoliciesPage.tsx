@@ -1,12 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Shield, Users, FolderOpen, Paperclip, Eye, AlertTriangle } from 'lucide-react';
 import { motion } from 'motion/react';
 import { mockPolicy } from '@/services/mockData';
+import { fetchPolicies } from '@/services/dataService';
+import type { SecurityPolicy } from '@/types';
 
 export default function PoliciesPage() {
-  const [policy, setPolicy] = useState(mockPolicy);
+  const [policy, setPolicy] = useState<SecurityPolicy>(mockPolicy);
+  const [loading, setLoading] = useState(true);
   const [showConfirm, setShowConfirm] = useState(false);
   const [pendingChange, setPendingChange] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchPolicies().then(setPolicy).catch(() => {}).finally(() => setLoading(false));
+  }, []);
 
   const handleToggle = (key: string) => {
     setPendingChange(key);

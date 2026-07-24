@@ -1,8 +1,20 @@
+import { useEffect, useState } from 'react';
 import { mockHistory } from '@/services/mockData';
+import { fetchHistory } from '@/services/dataService';
 import { riskLabel, riskColor, formatTime } from '@/utils/format';
 import { Clock, Search } from 'lucide-react';
+import type { Task } from '@/types';
 
 export default function HistoryPage() {
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchHistory()
+      .then((data) => setTasks(data as Task[]))
+      .catch(() => setTasks(mockHistory as Task[]))
+      .finally(() => setLoading(false));
+  }, []);
   return (
     <div className="p-6 max-w-4xl animate-fade-in">
       <div className="flex items-center justify-between mb-6">
@@ -34,7 +46,12 @@ export default function HistoryPage() {
             </tr>
           </thead>
           <tbody>
-            {mockHistory.map((task) => (
+            {loading ? (
+              <tr><td colSpan={6} className="px-4 py-12 text-center text-text-muted text-sm">加载中…</td></tr>
+            ) : tasks.length === 0 ? (
+              <tr><td colSpan={6} className="px-4 py-12 text-center text-text-muted text-sm">暂无执行记录</td></tr>
+            ) : (
+              tasks.map((task) => (
               <tr key={task.id} className="border-t border-border-primary hover:bg-bg-hover transition-colors">
                 <td className="px-4 py-3">
                   <p className="text-text-primary truncate max-w-xs">{task.userRequest}</p>
@@ -70,7 +87,8 @@ export default function HistoryPage() {
                   )}
                 </td>
               </tr>
-            ))}
+            ))
+          )}
           </tbody>
         </table>
       </div>
