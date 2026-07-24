@@ -2,5 +2,6 @@
 
 from .file_reader import read_file_content
 from .file_searcher import search_files
+from .agent import ParamGuardAgent
 
-__all__ = ["read_file_content", "search_files"]
+__all__ = ["read_file_content", "search_files", "ParamGuardAgent"]
