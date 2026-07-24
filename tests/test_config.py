@@ -13,7 +13,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agent.config import QQEmailConfig, load_qq_email_config
 
@@ -51,7 +51,8 @@ class QQEmailConfigTests(unittest.TestCase):
 
     # ── 失败场景：缺失变量 ───────────────────────────────────
 
-    def test_raises_when_email_missing(self) -> None:
+    @patch("agent.config.load_dotenv")
+    def test_raises_when_email_missing(self, mock_load: MagicMock) -> None:
         """缺少邮箱地址时应抛出 ValueError。"""
         os.environ["QQ_EMAIL_AUTH_CODE"] = "abcdefghijklmnop"
         # 故意不设置 QQ_EMAIL_ADDRESS。
@@ -60,7 +61,8 @@ class QQEmailConfigTests(unittest.TestCase):
             load_qq_email_config()
         self.assertIn("QQ_EMAIL_ADDRESS", str(ctx.exception))
 
-    def test_raises_when_auth_code_missing(self) -> None:
+    @patch("agent.config.load_dotenv")
+    def test_raises_when_auth_code_missing(self, mock_load: MagicMock) -> None:
         """缺少授权码时应抛出 ValueError。"""
         os.environ["QQ_EMAIL_ADDRESS"] = "testuser@qq.com"
         # 故意不设置 QQ_EMAIL_AUTH_CODE。
@@ -69,7 +71,8 @@ class QQEmailConfigTests(unittest.TestCase):
             load_qq_email_config()
         self.assertIn("QQ_EMAIL_AUTH_CODE", str(ctx.exception))
 
-    def test_raises_when_both_missing(self) -> None:
+    @patch("agent.config.load_dotenv")
+    def test_raises_when_both_missing(self, mock_load: MagicMock) -> None:
         """两个变量都缺失时应抛出 ValueError。"""
         with self.assertRaises(ValueError) as ctx:
             load_qq_email_config()

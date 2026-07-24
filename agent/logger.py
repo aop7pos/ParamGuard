@@ -91,3 +91,36 @@ def log_file_search(
         log_path = _LOGS_DIR / f"file_searches_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.log"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def log_email_send(
+    *,
+    to_address: str,
+    subject: str,
+    success: bool,
+    error: str = "",
+) -> None:
+    """记录一次邮件发送操作。
+
+    调用时机：每次 ``send_plain_email`` 执行完毕后立即调用。
+    注意：不会记录授权码等敏感信息。
+
+    Args:
+        to_address: 收件人邮箱地址。
+        subject: 邮件主题。
+        success: 是否发送成功。
+        error: 失败时的错误描述，成功时为空字符串。
+    """
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "to": to_address,
+        "subject": subject,
+        "success": success,
+        "error": error,
+    }
+
+    with _LOCK:
+        _ensure_logs_dir()
+        log_path = _LOGS_DIR / f"email_sends_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.log"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
