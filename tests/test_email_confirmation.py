@@ -40,9 +40,10 @@ class EmailConfirmationTests(unittest.TestCase):
     def setUp(self) -> None:
         os.environ["QQ_EMAIL_ADDRESS"] = "sender@qq.com"
         os.environ["QQ_EMAIL_AUTH_CODE"] = "test_auth_code_16chars"
+        os.environ["QQ_EMAIL_WHITELIST"] = ""  # 空白名单 = 允许所有测试地址
 
     def tearDown(self) -> None:
-        for key in ("QQ_EMAIL_ADDRESS", "QQ_EMAIL_AUTH_CODE"):
+        for key in ("QQ_EMAIL_ADDRESS", "QQ_EMAIL_AUTH_CODE", "QQ_EMAIL_WHITELIST"):
             os.environ.pop(key, None)
 
     # ── 确认后发送成功 ───────────────────────────────────────

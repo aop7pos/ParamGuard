@@ -154,3 +154,33 @@ def log_email_cancelled(
         log_path = _LOGS_DIR / f"email_sends_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.log"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def log_email_rejected(
+    *,
+    to_address: str,
+    subject: str,
+    reason: str,
+) -> None:
+    """记录一封邮件被白名单拒绝。
+
+    调用时机：收件人不在白名单中时立即调用。
+
+    Args:
+        to_address: 被拒绝的收件人地址。
+        subject: 邮件主题。
+        reason: 拒绝原因。
+    """
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": "rejected",
+        "to": to_address,
+        "subject": subject,
+        "reason": reason,
+    }
+
+    with _LOCK:
+        _ensure_logs_dir()
+        log_path = _LOGS_DIR / f"email_sends_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.log"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")

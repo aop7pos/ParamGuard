@@ -65,3 +65,20 @@ def load_qq_email_config() -> QQEmailConfig:
     auth_code = _require_env("QQ_EMAIL_AUTH_CODE")
 
     return QQEmailConfig(email_address=email_address, auth_code=auth_code)
+
+
+def load_whitelist() -> list[str]:
+    """加载收件人白名单。
+
+    白名单存储在 ``.env`` 的 ``QQ_EMAIL_WHITELIST`` 中，
+    多个地址用逗号分隔。白名单只能通过编辑 ``.env`` 文件修改，
+    程序无法绕过。
+
+    Returns:
+        收件人邮箱地址列表，已去除空白。如果未配置白名单则返回空列表。
+    """
+    _load_dotenv()
+    raw = os.getenv("QQ_EMAIL_WHITELIST", "").strip()
+    if not raw:
+        return []
+    return [addr.strip() for addr in raw.split(",") if addr.strip()]

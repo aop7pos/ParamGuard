@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-from .config import load_qq_email_config
-from .logger import log_email_send
+from .config import load_qq_email_config, load_whitelist
+from .logger import log_email_send, log_email_rejected
 
 # QQ 邮箱 SMTP 服务器配置。
 _SMTP_HOST = "smtp.qq.com"
@@ -61,6 +61,16 @@ def send_plain_email(
         return result
 
     to_address = to_address.strip()
+
+    # ── 白名单检查（发送前最后一道防线） ─────────────────────
+    whitelist = load_whitelist()
+    if whitelist and to_address not in whitelist:
+        result = SendResult(
+            to_address=to_address, subject=subject, success=False,
+            error=f"收件人不在白名单中: {to_address}",
+        )
+        log_email_rejected(to_address=to_address, subject=subject, reason=result.error)
+        return result
 
     # 加载发件人配置。
     try:

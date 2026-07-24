@@ -20,10 +20,11 @@ class SendPlainEmailTests(unittest.TestCase):
         """设置测试环境变量（有效凭据以通过配置加载）。"""
         os.environ["QQ_EMAIL_ADDRESS"] = "sender@qq.com"
         os.environ["QQ_EMAIL_AUTH_CODE"] = "test_auth_code_16chars"
+        os.environ["QQ_EMAIL_WHITELIST"] = ""  # 空白名单 = 允许所有，向后兼容
 
     def tearDown(self) -> None:
         """清理环境变量。"""
-        for key in ("QQ_EMAIL_ADDRESS", "QQ_EMAIL_AUTH_CODE"):
+        for key in ("QQ_EMAIL_ADDRESS", "QQ_EMAIL_AUTH_CODE", "QQ_EMAIL_WHITELIST"):
             os.environ.pop(key, None)
 
     # ── 成功场景 ──────────────────────────────────────────────
