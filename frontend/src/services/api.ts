@@ -41,4 +41,8 @@ export const api = {
     get<Record<string, unknown>>(`/tasks/${taskId}`),
   getTaskSteps: (taskId: string) =>
     get<Record<string, unknown>[]>(`/tasks/${taskId}/steps`),
+  confirmTask: (taskId: string) =>
+    post<Record<string, unknown>>(`/tasks/${taskId}/confirm`, {}),
+  cancelTask: (taskId: string) =>
+    post<Record<string, unknown>>(`/tasks/${taskId}/cancel`, {}),
 };

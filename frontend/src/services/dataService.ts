@@ -110,3 +110,11 @@ export async function getTask(taskId: string): Promise<Record<string, unknown>> 
 export async function getTaskSteps(taskId: string): Promise<Record<string, unknown>[]> {
   return api.getTaskSteps(taskId);
 }
+
+export async function confirmTask(taskId: string): Promise<Record<string, unknown>> {
+  return api.confirmTask(taskId);
+}
+
+export async function cancelTask(taskId: string): Promise<Record<string, unknown>> {
+  return api.cancelTask(taskId);
+}

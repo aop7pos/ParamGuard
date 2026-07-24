@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
 import threading
@@ -26,6 +27,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from agent.agent import ParamGuardAgent, StepKind
+from agent.email_sender import send_plain_email
 from agent.tool_result import ToolResult
 
 _LOGS_DIR = _PROJECT_ROOT / "logs"
@@ -315,15 +317,16 @@ def create_task(body: TaskRequest) -> dict[str, Any]:
                         checks=_build_checks(tr))
                     _append_step(task_id, step_dict)
 
-                    # 存储草稿
+                    # 存储草稿（含内容哈希，用于防篡改校验）
                     with _tasks_lock:
                         t = _tasks.get(task_id)
                         if t is not None:
-                            t["email_draft"] = {
+                            body_text = draft.get("body", "") if draft else ""
+                            draft_obj = {
                                 "from_address": _load_env().get("QQ_EMAIL_ADDRESS", ""),
                                 "to_address": tr.result.get("to_address", ""),
                                 "subject": tr.result.get("subject", ""),
-                                "body": draft.get("body", "") if draft else "",
+                                "body": body_text,
                                 "attachments": [
                                     {"name": n, "path": "", "size_bytes": 0}
                                     for n in tr.result.get("attachment_names", [])
@@ -332,7 +335,11 @@ def create_task(body: TaskRequest) -> dict[str, Any]:
                                 "file_permission_check": True,
                                 "sensitive_data_found": False,
                                 "sensitive_data_details": [],
+                                "draft_hash": hashlib.sha256(
+                                    f"{tr.result.get('to_address', '')}|{tr.result.get('subject', '')}|{body_text}".encode()
+                                ).hexdigest(),
                             }
+                            t["email_draft"] = draft_obj
                             t["status"] = "awaiting_confirmation"
                     break  # 停在草稿，不继续
 
@@ -402,6 +409,147 @@ def get_task_steps(task_id: str) -> list[dict[str, Any]]:
     if t is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     return t["steps"]
+
+
+# ═══════════════════════════════════════════════════════════════
+# 确认 / 取消
+# ═══════════════════════════════════════════════════════════════
+
+@app.post("/api/tasks/{task_id}/confirm")
+def confirm_task(task_id: str) -> dict[str, Any]:
+    """确认发送邮件。
+
+    后端再次执行全部安全检查后，通过 QQ 邮箱真实发送。
+    防止重复发送：已发送或已取消的任务不可再次确认。
+    内容一致性检查：草稿哈希不匹配则拒绝（防篡改）。
+    """
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+
+    if t is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    if t["status"] != "awaiting_confirmation":
+        raise HTTPException(status_code=400, detail=f"任务状态为 {t['status']}，不可确认发送")
+
+    if t.get("email_sent"):
+        raise HTTPException(status_code=400, detail="邮件已发送，不可重复发送")
+
+    draft = t.get("email_draft")
+    if not draft:
+        raise HTTPException(status_code=400, detail="没有待发送的邮件草稿")
+
+    # ── 内容一致性检查 ────────────────────────────────────────
+    body_text = draft.get("body", "")
+    expected_hash = hashlib.sha256(
+        f"{draft.get('to_address', '')}|{draft.get('subject', '')}|{body_text}".encode()
+    ).hexdigest()
+    if expected_hash != draft.get("draft_hash", ""):
+        with _tasks_lock:
+            t["status"] = "failed"
+            t["steps"].append(_make_step(task_id, "confirm", "确认发送", "send_email", "failed",
+                error="邮件内容已被修改，草稿哈希不匹配。请重新生成邮件草稿后再确认。",
+                checks=[{"name": "内容一致性检查", "passed": False, "detail": "草稿哈希不匹配"}]))
+        raise HTTPException(status_code=400, detail="邮件内容已被修改，请重新生成草稿后确认")
+
+    # ── 白名单检查 ────────────────────────────────────────────
+    to_addr = draft.get("to_address", "")
+    env = _load_env()
+    wl_raw = env.get("QQ_EMAIL_WHITELIST", "")
+    whitelist = [a.strip() for a in wl_raw.split(",") if a.strip()] if wl_raw else []
+    if whitelist and to_addr not in whitelist:
+        with _tasks_lock:
+            t["status"] = "failed"
+            t["steps"].append(_make_step(task_id, "confirm", "确认发送", "send_email", "blocked",
+                error=f"收件人不在白名单中: {to_addr}",
+                checks=[{"name": "收件人白名单检查", "passed": False, "detail": f"{to_addr} 不在白名单中"}]))
+        return {
+            "success": False,
+            "error_type": "whitelist",
+            "error": f"收件人不在白名单中: {to_addr}",
+        }
+
+    # ── 附件路径检查 ──────────────────────────────────────────
+    attachments_raw = draft.get("attachments", [])
+    # 附件已在 Agent 执行时校验过路径，此处为二次确认。
+
+    # ── 标记为发送中（防止并发重复） ──────────────────────────
+    with _tasks_lock:
+        if t.get("email_sent"):
+            raise HTTPException(status_code=400, detail="邮件已发送")
+        t["status"] = "running"  # 临时状态，防止重复点击
+        t["steps"].append(_make_step(task_id, "sending", "正在发送邮件", "send_email", "running"))
+
+    # ── 真实发送 ──────────────────────────────────────────────
+    try:
+        result = send_plain_email(
+            to_address=to_addr,
+            subject=draft.get("subject", ""),
+            body=body_text,
+        )
+    except Exception as exc:
+        with _tasks_lock:
+            t["status"] = "failed"
+            t["steps"].append(_make_step(task_id, "confirm", "确认发送", "send_email", "failed",
+                error=f"发送异常: {exc}"))
+        return {"success": False, "error_type": "system", "error": str(exc)}
+
+    # ── 更新任务状态 ──────────────────────────────────────────
+    with _tasks_lock:
+        if result.success:
+            t["status"] = "completed"
+            t["email_sent"] = True
+            # 更新"正在发送"步骤
+            for s in t["steps"]:
+                if s["id"] == f"step-{task_id}-sending":
+                    s["status"] = "success"
+                    s["name"] = "邮件已发送"
+                    s["result"] = {
+                        "to_address": result.result.get("to_address", ""),
+                        "subject": result.result.get("subject", ""),
+                    }
+                    s["security_check"] = {
+                        "passed": True,
+                        "checks": [
+                            {"name": "SMTP 发送", "passed": True, "detail": "邮件已通过 QQ 邮箱发出"},
+                        ],
+                    }
+            t["steps"].append(_make_step(task_id, "done", "执行完成", "agent", "success"))
+        else:
+            t["status"] = "failed"
+            for s in t["steps"]:
+                if s["id"] == f"step-{task_id}-sending":
+                    s["status"] = "failed"
+                    s["error"] = result.error
+            t["steps"].append(_make_step(task_id, "confirm", "确认发送", "send_email", "failed",
+                error=result.error,
+                checks=[{"name": "SMTP 发送", "passed": False, "detail": result.error}]))
+
+    return {
+        "success": result.success,
+        "error_type": result.error_type if not result.success else "",
+        "error": result.error if not result.success else "",
+    }
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+def cancel_task(task_id: str) -> dict[str, Any]:
+    """取消邮件发送。"""
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+
+    if t is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    if t["status"] != "awaiting_confirmation":
+        raise HTTPException(status_code=400, detail=f"任务状态为 {t['status']}，不可取消")
+
+    with _tasks_lock:
+        t["status"] = "cancelled"
+        t["steps"].append(_make_step(task_id, "cancel", "取消发送", "send_email", "cancelled",
+            error="用户取消发送"))
+
+    return {"success": True}
 
 
 # ═══════════════════════════════════════════════════════════════

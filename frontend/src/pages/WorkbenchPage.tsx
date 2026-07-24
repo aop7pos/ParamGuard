@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import TaskInput from '@/components/workbench/TaskInput';
 import Timeline from '@/components/workbench/Timeline';
 import ConfirmationDialog from '@/components/email/ConfirmationDialog';
-import { createTask, getTask, getTaskSteps } from '@/services/dataService';
+import { createTask, getTask, getTaskSteps, confirmTask, cancelTask } from '@/services/dataService';
 import { mockEmailDraft } from '@/services/mockData';
 import type { TaskStep, EmailDraft } from '@/types';
 
@@ -111,31 +111,45 @@ export default function WorkbenchPage() {
     }
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
+    if (!taskIdRef.current) return;
     setConfirming(true);
-    // TODO Phase 4: POST /api/tasks/{id}/confirm
-    setTimeout(() => {
+    try {
+      const res = await confirmTask(taskIdRef.current);
+      const success = Boolean(res.success);
       setShowConfirm(false);
       setConfirming(false);
-      setSteps((prev) =>
-        prev.map((s) =>
-          s.status === 'awaiting_confirmation'
-            ? { ...s, status: 'success' as const, endTime: new Date().toISOString() }
-            : s
-        )
-      );
-    }, 1500);
+
+      if (success) {
+        // 刷新步骤展示真实发送结果
+        const rawSteps = await getTaskSteps(taskIdRef.current);
+        setSteps(rawSteps.map(apiStepToTaskStep));
+      } else {
+        // 被拦截
+        const rawSteps = await getTaskSteps(taskIdRef.current);
+        setSteps(rawSteps.map(apiStepToTaskStep));
+      }
+    } catch (err) {
+      setConfirming(false);
+      // 刷新步骤展示后端错误
+      try {
+        const rawSteps = await getTaskSteps(taskIdRef.current);
+        setSteps(rawSteps.map(apiStepToTaskStep));
+      } catch {}
+    }
   };
 
-  const handleCancel = () => {
+  const handleCancel = async () => {
+    if (!taskIdRef.current) return;
+    try {
+      await cancelTask(taskIdRef.current);
+    } catch {}
     setShowConfirm(false);
-    setSteps((prev) =>
-      prev.map((s) =>
-        s.status === 'awaiting_confirmation'
-          ? { ...s, status: 'cancelled' as const, endTime: new Date().toISOString() }
-          : s
-      )
-    );
+    // 刷新步骤展示取消状态
+    try {
+      const rawSteps = await getTaskSteps(taskIdRef.current);
+      setSteps(rawSteps.map(apiStepToTaskStep));
+    } catch {}
   };
 
   const hasPendingConfirmation = steps.some((s) => s.status === 'awaiting_confirmation');
