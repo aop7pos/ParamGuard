@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
+
+# 确保直接运行脚本时也能找到项目内的 agent 包。
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from agent.file_reader import read_file_content
 
@@ -19,13 +25,42 @@ def main() -> int:
         default="utf-8",
         help="文件编码，默认是 utf-8",
     )
+    parser.add_argument(
+        "-j",
+        "--json",
+        action="store_true",
+        help="以 JSON 格式输出完整结果（包含路径、内容、执行状态）",
+    )
     args = parser.parse_args()
 
     try:
-        # end="" 避免 print 再添加换行符，从而保持文件内容原样输出。
-        print(read_file_content(args.path, encoding=args.encoding), end="")
-    except (OSError, UnicodeError, ValueError, TypeError) as error:
-        # 预期的输入与文件错误使用标准错误流输出，并以非零状态码结束。
+        result = read_file_content(args.path, encoding=args.encoding)
+        if result.success:
+            if args.json:
+                import json
+                print(json.dumps({
+                    "path": result.path,
+                    "content": result.content,
+                    "success": result.success,
+                    "error": result.error,
+                }, ensure_ascii=False, indent=2))
+            else:
+                # end="" 避免 print 再添加换行符，从而保持文件内容原样输出。
+                print(result.content, end="")
+        else:
+            if args.json:
+                import json
+                print(json.dumps({
+                    "path": result.path,
+                    "content": result.content,
+                    "success": result.success,
+                    "error": result.error,
+                }, ensure_ascii=False, indent=2), file=sys.stderr)
+            else:
+                print(f"读取文件失败: {result.error}", file=sys.stderr)
+            return 1
+    except Exception as error:
+        # 捕获所有未预期的异常（如系统级错误），使用标准错误流输出。
         print(f"读取文件失败: {error}", file=sys.stderr)
         return 1
 
