@@ -12,7 +12,6 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from agent.file_reader import read_file_content
-from agent.logger import log_file_read
 
 
 def main() -> int:
@@ -40,29 +39,46 @@ def main() -> int:
             if args.json:
                 import json
                 print(json.dumps({
-                    "path": result.path,
-                    "content": result.content,
                     "success": result.success,
+                    "tool_name": result.tool_name,
+                    "params": result.params,
+                    "result": result.result,
+                    "error_type": result.error_type,
                     "error": result.error,
+                    "timestamp": result.timestamp,
+                    "audit_id": result.audit_id,
                 }, ensure_ascii=False, indent=2))
             else:
                 # end="" 避免 print 再添加换行符，从而保持文件内容原样输出。
-                print(result.content, end="")
+                print(result.result.get("content", ""), end="")
         else:
             if args.json:
                 import json
                 print(json.dumps({
-                    "path": result.path,
-                    "content": result.content,
                     "success": result.success,
+                    "tool_name": result.tool_name,
+                    "params": result.params,
+                    "result": result.result,
+                    "error_type": result.error_type,
                     "error": result.error,
+                    "timestamp": result.timestamp,
+                    "audit_id": result.audit_id,
                 }, ensure_ascii=False, indent=2), file=sys.stderr)
             else:
                 print(f"读取文件失败: {result.error}", file=sys.stderr)
             return 1
     except Exception as error:
         # 捕获所有未预期的异常（如系统级错误），使用标准错误流输出。
-        log_file_read(path=args.path, success=False, error=str(error))
+        from agent.tool_result import ToolResult, ErrorType, write_audit_log
+        tr = ToolResult(
+            success=False,
+            tool_name="read_file",
+            params={"path": args.path, "encoding": args.encoding},
+            result={},
+            error_type=ErrorType.SYSTEM,
+            error=str(error),
+        )
+        write_audit_log(tr)
         print(f"读取文件失败: {error}", file=sys.stderr)
         return 1
 

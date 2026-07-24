@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
 
-from .logger import log_file_search
+from .tool_result import ErrorType, ToolResult, write_audit_log
 
 # 项目根目录，与 file_reader 使用相同的授权目录。
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -38,26 +38,6 @@ class SearchMatch:
     file_name: str
     match_type: str
     snippet: str
-
-
-@dataclass
-class SearchResult:
-    """文件搜索的执行结果。
-
-    Attributes:
-        query: 搜索关键词。
-        search_dir: 搜索范围目录的绝对路径。
-        matches: 匹配结果列表，无结果时为空列表。
-        total_files_scanned: 成功扫描的文件数。
-        total_files_skipped: 因无法读取等原因跳过的文件数。
-        errors: 跳过文件时的错误描述列表。
-    """
-    query: str
-    search_dir: str
-    matches: list[SearchMatch] = field(default_factory=list)
-    total_files_scanned: int = 0
-    total_files_skipped: int = 0
-    errors: list[str] = field(default_factory=list)
 
 
 def _is_text_file(file_path: Path) -> bool:
@@ -134,7 +114,7 @@ def search_files(
     search_filename: bool = True,
     encoding: str = "utf-8",
     case_sensitive: bool = False,
-) -> SearchResult:
+) -> ToolResult:
     """在授权目录内按文件名或内容关键词搜索文件。
 
     只允许搜索 ``tests/`` 目录下的文件。所有错误均封装在返回值中，
@@ -149,82 +129,94 @@ def search_files(
         case_sensitive: 是否区分大小写，默认不区分。
 
     Returns:
-        ``SearchResult``，包含匹配列表、扫描统计和错误信息。
+        ``ToolResult``，包含统一的执行状态、参数、结果和审计信息。
     """
+    params = {
+        "query": query if isinstance(query, str) else str(query),
+        "search_dir": str(search_dir) if search_dir else str(_ALLOWED_DIR),
+        "search_content": search_content,
+        "search_filename": search_filename,
+        "encoding": encoding,
+        "case_sensitive": case_sensitive,
+    }
+
+    def _make(
+        *,
+        success: bool,
+        matches: list[dict] | None = None,
+        scanned: int = 0,
+        skipped: int = 0,
+        err_list: list[str] | None = None,
+        error: str = "",
+        error_type: str = "",
+    ) -> ToolResult:
+        tr = ToolResult(
+            success=success,
+            tool_name="search_files",
+            params=params,
+            result={
+                "query": params["query"],
+                "search_dir": params["search_dir"],
+                "matches": matches or [],
+                "match_count": len(matches) if matches else 0,
+                "files_scanned": scanned,
+                "files_skipped": skipped,
+                "errors": err_list or [],
+            },
+            error_type=error_type,
+            error=error,
+        )
+        write_audit_log(tr)
+        return tr
+
     # ── 参数校验 ──────────────────────────────────────────────
     if not isinstance(query, str) or not query.strip():
-        result = SearchResult(
-            query=query if isinstance(query, str) else str(query),
-            search_dir="",
+        return _make(
+            success=False,
+            error="搜索关键词不能为空",
+            error_type=ErrorType.VALIDATION,
         )
-        result.errors.append("搜索关键词不能为空")
-        log_file_search(
-            query=result.query,
-            search_dir=result.search_dir,
-            match_count=0,
-            files_scanned=0,
-            files_skipped=0,
-            errors=result.errors,
-        )
-        return result
 
     query = query.strip()
+    params["query"] = query
 
     # 解析搜索目录。
     if search_dir is None:
         resolved_dir = _ALLOWED_DIR.resolve()
+        params["search_dir"] = str(_ALLOWED_DIR)
     elif isinstance(search_dir, (str, PathLike)):
         resolved_dir = Path(str(search_dir)).resolve()
+        params["search_dir"] = str(resolved_dir)
     else:
-        result = SearchResult(query=query, search_dir=str(search_dir))
-        result.errors.append("搜索目录必须是字符串或路径对象")
-        log_file_search(
-            query=result.query,
-            search_dir=result.search_dir,
-            match_count=0,
-            files_scanned=0,
-            files_skipped=0,
-            errors=result.errors,
+        return _make(
+            success=False,
+            error="搜索目录必须是字符串或路径对象",
+            error_type=ErrorType.VALIDATION,
         )
-        return result
 
     # 安全检查：搜索目录必须在授权范围内。
     try:
         resolved_dir.relative_to(_ALLOWED_DIR.resolve())
     except ValueError:
-        result = SearchResult(query=query, search_dir=str(resolved_dir))
-        result.errors.append(
-            f"不允许搜索该目录（试图访问 tests/ 目录之外的位置）: {search_dir}"
+        return _make(
+            success=False,
+            error=f"不允许搜索该目录（试图访问 tests/ 目录之外的位置）: {search_dir}",
+            error_type=ErrorType.PERMISSION,
         )
-        log_file_search(
-            query=result.query,
-            search_dir=result.search_dir,
-            match_count=0,
-            files_scanned=0,
-            files_skipped=0,
-            errors=result.errors,
-        )
-        return result
 
     # 搜索目录不存在时无结果。
     if not resolved_dir.is_dir():
-        result = SearchResult(query=query, search_dir=str(resolved_dir))
-        result.errors.append(f"搜索目录不存在: {resolved_dir}")
-        log_file_search(
-            query=result.query,
-            search_dir=result.search_dir,
-            match_count=0,
-            files_scanned=0,
-            files_skipped=0,
-            errors=result.errors,
+        return _make(
+            success=False,
+            error=f"搜索目录不存在: {resolved_dir}",
+            error_type=ErrorType.SYSTEM,
         )
-        return result
 
     # ── 执行搜索 ──────────────────────────────────────────────
     all_matches: list[SearchMatch] = []
     scanned = 0
     skipped = 0
-    errors: list[str] = []
+    err_list: list[str] = []
 
     for entry in sorted(resolved_dir.rglob("*")):
         # 跳过目录、符号链接等非普通文件。
@@ -255,24 +247,24 @@ def search_files(
             )
             if read_error is not None:
                 skipped += 1
-                errors.append(read_error)
+                err_list.append(read_error)
             else:
                 all_matches.extend(content_matches)
 
-    result = SearchResult(
-        query=query,
-        search_dir=str(resolved_dir),
-        matches=all_matches,
-        total_files_scanned=scanned,
-        total_files_skipped=skipped,
-        errors=errors,
+    matches_dicts = [
+        {
+            "file_path": m.file_path,
+            "file_name": m.file_name,
+            "match_type": m.match_type,
+            "snippet": m.snippet,
+        }
+        for m in all_matches
+    ]
+
+    return _make(
+        success=True,
+        matches=matches_dicts,
+        scanned=scanned,
+        skipped=skipped,
+        err_list=err_list,
     )
-    log_file_search(
-        query=result.query,
-        search_dir=result.search_dir,
-        match_count=len(result.matches),
-        files_scanned=result.total_files_scanned,
-        files_skipped=result.total_files_skipped,
-        errors=result.errors,
-    )
-    return result

@@ -1,13 +1,12 @@
 """使用 QQ 邮箱 SMTP 发送纯文本邮件（可附带安全目录内的附件）。
 
 授权码通过 ``agent.config`` 从 ``.env`` 安全读取，
-不会出现在代码中。附件只能来自 ``tests/`` 目录。
+不会出现在代码、返回结果或日志中。附件只能来自 ``tests/`` 目录。
 """
 
 from __future__ import annotations
 
 import smtplib
-from dataclasses import dataclass, field
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
@@ -16,7 +15,7 @@ from os import PathLike
 from pathlib import Path
 
 from .config import load_qq_email_config, load_whitelist
-from .logger import log_email_send, log_email_rejected
+from .tool_result import ErrorType, ToolResult, write_audit_log
 
 # QQ 邮箱 SMTP 服务器配置。
 _SMTP_HOST = "smtp.qq.com"
@@ -25,24 +24,6 @@ _SMTP_PORT = 465  # SSL
 # 附件只允许来自该目录。
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ALLOWED_DIR = _PROJECT_ROOT / "tests"
-
-
-@dataclass
-class SendResult:
-    """邮件发送的执行结果。
-
-    Attributes:
-        to_address: 收件人地址。
-        subject: 邮件主题。
-        success: 是否发送成功。
-        error: 失败时的错误信息，成功时为空字符串。
-        attachment_names: 已发送的附件文件名列表。
-    """
-    to_address: str
-    subject: str
-    success: bool
-    error: str
-    attachment_names: list[str] = field(default_factory=list)
 
 
 def _validate_attachment(path: str | PathLike[str]) -> tuple[Path, bytes, str]:
@@ -99,7 +80,7 @@ def send_plain_email(
     subject: str = "ParamGuard 测试邮件",
     body: str = "这是一封来自 ParamGuard 项目的测试邮件。\n\n如果收到此邮件，说明 QQ 邮箱 SMTP 发送功能正常工作。\n",
     attachments: list[str | PathLike[str]] | None = None,
-) -> SendResult:
+) -> ToolResult:
     """发送一封纯文本邮件，可附带安全目录内的附件。
 
     使用 ``.env`` 中配置的 QQ 邮箱作为发件人，通过 SSL 连接
@@ -108,6 +89,8 @@ def send_plain_email(
     附件只能来自项目 ``tests/`` 目录，任何越权路径（包括路径穿越）
     都会被拒绝。
 
+    **敏感信息保护**：授权码绝不会出现在返回结果、日志或错误信息中。
+
     Args:
         to_address: 收件人邮箱地址。
         subject: 邮件主题。
@@ -115,31 +98,63 @@ def send_plain_email(
         attachments: 附件文件路径列表，可选。
 
     Returns:
-        ``SendResult``，包含收件人、主题、成功标志、错误信息
-        和已发送的附件文件名。
+        ``ToolResult``，包含统一的执行状态、参数、结果和审计信息。
     """
     if attachments is None:
         attachments = []
 
+    orig_to_address = to_address  # 保留原始值用于结果（不做 strip）
+
+    # 构造脱敏后的 params（不含授权码和正文内容）。
+    safe_params: dict = {
+        "to_address": orig_to_address,
+        "subject": subject,
+        "body_length": len(body),
+        "attachment_count": len(attachments),
+        "attachment_names": [Path(p).name for p in attachments],
+    }
+
+    def _make(
+        *,
+        success: bool,
+        error: str = "",
+        error_type: str = "",
+        attachment_names: list[str] | None = None,
+    ) -> ToolResult:
+        tr = ToolResult(
+            success=success,
+            tool_name="send_email",
+            params=safe_params,
+            result={
+                "to_address": orig_to_address,
+                "subject": subject,
+                "attachment_names": attachment_names or [],
+            },
+            error_type=error_type,
+            error=error,
+        )
+        write_audit_log(tr)
+        return tr
+
     # ── 参数校验 ──────────────────────────────────────────────
     if not to_address or not to_address.strip():
-        result = SendResult(to_address=to_address, subject=subject, success=False, error="收件人地址不能为空")
-        log_email_send(
-            to_address=result.to_address, subject=result.subject,
-            success=result.success, error=result.error,
-            attachment_count=0, attachment_names=[],
+        return _make(
+            success=False,
+            error="收件人地址不能为空",
+            error_type=ErrorType.VALIDATION,
         )
-        return result
 
     to_address = to_address.strip()
+    safe_params["to_address"] = to_address
 
     # ── 白名单检查（发送前最后一道防线） ─────────────────────
     whitelist = load_whitelist()
     if whitelist and to_address not in whitelist:
-        result = SendResult(to_address=to_address, subject=subject, success=False,
-            error=f"收件人不在白名单中: {to_address}")
-        log_email_rejected(to_address=to_address, subject=subject, reason=result.error)
-        return result
+        return _make(
+            success=False,
+            error=f"收件人不在白名单中: {to_address}",
+            error_type=ErrorType.WHITELIST,
+        )
 
     # ── 附件校验（在构造邮件前验证所有附件） ─────────────────
     validated_attachments: list[tuple[str, bytes]] = []
@@ -150,25 +165,21 @@ def send_plain_email(
             validated_attachments.append((filename, content_bytes))
             attachment_names.append(filename)
         except ValueError as exc:
-            result = SendResult(to_address=to_address, subject=subject, success=False, error=str(exc))
-            log_email_send(
-                to_address=result.to_address, subject=result.subject,
-                success=result.success, error=result.error,
-                attachment_count=0, attachment_names=[],
+            return _make(
+                success=False,
+                error=str(exc),
+                error_type=ErrorType.ATTACHMENT,
             )
-            return result
 
     # 加载发件人配置。
     try:
         config = load_qq_email_config()
     except ValueError as exc:
-        result = SendResult(to_address=to_address, subject=subject, success=False, error=str(exc))
-        log_email_send(
-            to_address=result.to_address, subject=result.subject,
-            success=result.success, error=result.error,
-            attachment_count=0, attachment_names=[],
+        return _make(
+            success=False,
+            error=str(exc),
+            error_type=ErrorType.CONFIG,
         )
-        return result
 
     # ── 构造邮件 ──────────────────────────────────────────────
     msg = MIMEMultipart()
@@ -194,41 +205,26 @@ def send_plain_email(
             server.login(config.email_address, config.auth_code)
             server.sendmail(config.email_address, to_address, msg.as_string())
     except smtplib.SMTPAuthenticationError as exc:
-        result = SendResult(to_address=to_address, subject=subject, success=False,
-            error=f"SMTP 认证失败，请检查邮箱地址和授权码: {exc}")
-        log_email_send(
-            to_address=result.to_address, subject=result.subject,
-            success=result.success, error=result.error,
-            attachment_count=0, attachment_names=[],
+        # 注意：错误信息中不包含授权码本身。
+        return _make(
+            success=False,
+            error=f"SMTP 认证失败，请检查邮箱地址和授权码是否正确",
+            error_type=ErrorType.SMTP_AUTH,
         )
-        return result
     except smtplib.SMTPException as exc:
-        result = SendResult(to_address=to_address, subject=subject, success=False,
-            error=f"SMTP 发送失败: {exc}")
-        log_email_send(
-            to_address=result.to_address, subject=result.subject,
-            success=result.success, error=result.error,
-            attachment_count=0, attachment_names=[],
+        return _make(
+            success=False,
+            error=f"SMTP 发送失败: {exc}",
+            error_type=ErrorType.SMTP,
         )
-        return result
     except OSError as exc:
-        result = SendResult(to_address=to_address, subject=subject, success=False,
-            error=f"网络连接失败: {exc}")
-        log_email_send(
-            to_address=result.to_address, subject=result.subject,
-            success=result.success, error=result.error,
-            attachment_count=0, attachment_names=[],
+        return _make(
+            success=False,
+            error=f"网络连接失败: {exc}",
+            error_type=ErrorType.NETWORK,
         )
-        return result
 
-    result = SendResult(
-        to_address=to_address, subject=subject, success=True, error="",
+    return _make(
+        success=True,
         attachment_names=attachment_names,
     )
-    log_email_send(
-        to_address=result.to_address, subject=result.subject,
-        success=result.success, error=result.error,
-        attachment_count=len(result.attachment_names),
-        attachment_names=result.attachment_names,
-    )
-    return result

@@ -10,7 +10,8 @@ import smtplib
 import unittest
 from unittest.mock import MagicMock, patch
 
-from agent.email_sender import SendResult, send_plain_email
+from agent.email_sender import send_plain_email
+from agent.tool_result import ToolResult
 
 
 class SendPlainEmailTests(unittest.TestCase):
@@ -38,7 +39,7 @@ class SendPlainEmailTests(unittest.TestCase):
         result = send_plain_email(to_address="receiver@qq.com")
 
         self.assertTrue(result.success)
-        self.assertEqual(result.to_address, "receiver@qq.com")
+        self.assertEqual(result.result.get("to_address"), "receiver@qq.com")
         self.assertEqual(result.error, "")
         mock_server.login.assert_called_once_with("sender@qq.com", "test_auth_code_16chars")
         mock_server.sendmail.assert_called_once()
@@ -52,7 +53,7 @@ class SendPlainEmailTests(unittest.TestCase):
         result = send_plain_email()
 
         self.assertTrue(result.success)
-        self.assertEqual(result.to_address, "1962383827@qq.com")
+        self.assertEqual(result.result.get("to_address"), "1962383827@qq.com")
 
     # ── 失败场景：参数 ────────────────────────────────────────
 
@@ -112,31 +113,56 @@ class SendPlainEmailTests(unittest.TestCase):
 
     # ── 返回类型 ──────────────────────────────────────────────
 
-    def test_returns_send_result_instance(self) -> None:
-        """返回值始终是 SendResult 实例。"""
+    def test_returns_tool_result_instance(self) -> None:
+        """返回值始终是 ToolResult 实例。"""
         result = send_plain_email(to_address="  ")
-        self.assertIsInstance(result, SendResult)
+        self.assertIsInstance(result, ToolResult)
 
-    # ── 安全：日志不包含授权码 ────────────────────────────────
+    # ── 安全：返回结果和日志不包含授权码 ──────────────────────
 
     @patch("agent.email_sender.smtplib.SMTP_SSL")
-    @patch("agent.email_sender.log_email_send")
-    def test_log_does_not_contain_auth_code(
-        self, mock_log: MagicMock, mock_smtp_class: MagicMock
+    def test_result_does_not_contain_auth_code(
+        self, mock_smtp_class: MagicMock
     ) -> None:
-        """验证日志中不包含授权码。"""
+        """验证返回的 ToolResult 中不包含授权码。"""
         mock_server = MagicMock()
         mock_smtp_class.return_value.__enter__.return_value = mock_server
 
-        send_plain_email(to_address="receiver@qq.com")
+        result = send_plain_email(to_address="receiver@qq.com")
 
-        # 获取日志调用参数。
-        call_args = mock_log.call_args.kwargs
-        # 日志的 error 字段不应包含授权码（成功时为空）。
-        self.assertEqual(call_args["error"], "")
-        self.assertEqual(call_args["to_address"], "receiver@qq.com")
-        # 确认日志函数签名中没有 auth_code 参数。
-        self.assertNotIn("auth_code", call_args)
+        # params 中不包含授权码。
+        self.assertNotIn("auth_code", result.params)
+        self.assertNotIn("QQ_EMAIL_AUTH_CODE", str(result.params))
+        self.assertNotIn("password", str(result.params))
+        # result 字典中不包含授权码。
+        self.assertNotIn("auth_code", result.result)
+        # error 中不包含授权码。
+        self.assertNotIn("test_auth_code_16chars", result.error)
+
+    # ── 统一字段完整性 ───────────────────────────────────────
+
+    @patch("agent.email_sender.smtplib.SMTP_SSL")
+    def test_tool_result_has_required_fields(
+        self, mock_smtp_class: MagicMock
+    ) -> None:
+        """ToolResult 应包含所有统一字段。"""
+        mock_server = MagicMock()
+        mock_smtp_class.return_value.__enter__.return_value = mock_server
+
+        result = send_plain_email(to_address="receiver@qq.com")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.tool_name, "send_email")
+        self.assertIn("to_address", result.params)
+        self.assertIn("subject", result.params)
+        # 敏感信息不出现在 params 中。
+        self.assertNotIn("auth_code", result.params)
+        self.assertNotIn("body", result.params)  # 正文内容不记录在 params 中
+        self.assertIn("body_length", result.params)  # 只记录长度
+        self.assertIsInstance(result.timestamp, str)
+        self.assertTrue(len(result.timestamp) > 0)
+        self.assertIsInstance(result.audit_id, str)
+        self.assertTrue(len(result.audit_id) > 0)
 
 
 if __name__ == "__main__":

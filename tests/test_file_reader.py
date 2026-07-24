@@ -4,7 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from agent.file_reader import ReadResult, read_file_content
+from agent.file_reader import read_file_content
+from agent.tool_result import ToolResult
 
 # 测试文件所在目录，即项目的 tests/ 目录。
 _TESTS_DIR = Path(__file__).resolve().parent
@@ -24,8 +25,8 @@ class ReadFileContentTests(unittest.TestCase):
             result = read_file_content(file_path)
 
             self.assertTrue(result.success)
-            self.assertEqual(result.content, "第一行\n第二行")
-            self.assertEqual(result.path, str(file_path.resolve()))
+            self.assertEqual(result.result.get("content"), "第一行\n第二行")
+            self.assertEqual(result.result.get("path"), str(file_path.resolve()))
             self.assertEqual(result.error, "")
 
     def test_accepts_string_path(self) -> None:
@@ -37,7 +38,7 @@ class ReadFileContentTests(unittest.TestCase):
             result = read_file_content(str(file_path))
 
             self.assertTrue(result.success)
-            self.assertEqual(result.content, "hello")
+            self.assertEqual(result.result.get("content"), "hello")
 
     # ── 失败场景 ──────────────────────────────────────────────
 
@@ -93,16 +94,48 @@ class ReadFileContentTests(unittest.TestCase):
 
     # ── 返回类型 ──────────────────────────────────────────────
 
-    def test_returns_read_result_instance(self) -> None:
-        """返回值始终是 ReadResult 实例。"""
+    def test_returns_tool_result_instance(self) -> None:
+        """返回值始终是 ToolResult 实例。"""
         result = read_file_content("  ")
-        self.assertIsInstance(result, ReadResult)
+        self.assertIsInstance(result, ToolResult)
 
         with tempfile.TemporaryDirectory(dir=_TESTS_DIR) as directory:
             file_path = Path(directory) / "ok.txt"
             file_path.write_text("data", encoding="utf-8")
             result = read_file_content(file_path)
-            self.assertIsInstance(result, ReadResult)
+            self.assertIsInstance(result, ToolResult)
+
+    # ── 统一字段完整性 ───────────────────────────────────────
+
+    def test_tool_result_has_required_fields(self) -> None:
+        """ToolResult 应包含所有统一字段。"""
+        with tempfile.TemporaryDirectory(dir=_TESTS_DIR) as directory:
+            file_path = Path(directory) / "ok.txt"
+            file_path.write_text("data", encoding="utf-8")
+
+            result = read_file_content(file_path)
+
+            self.assertTrue(result.success)
+            self.assertEqual(result.tool_name, "read_file")
+            self.assertIn("path", result.params)
+            self.assertIn("path", result.result)
+            self.assertIn("content", result.result)
+            self.assertIsInstance(result.timestamp, str)
+            self.assertTrue(len(result.timestamp) > 0)
+            self.assertIsInstance(result.audit_id, str)
+            self.assertTrue(len(result.audit_id) > 0)
+
+    def test_tool_result_on_failure_has_required_fields(self) -> None:
+        """失败时 ToolResult 也应包含所有统一字段。"""
+        result = read_file_content("  ")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.tool_name, "read_file")
+        self.assertIsInstance(result.timestamp, str)
+        self.assertIsInstance(result.audit_id, str)
+        self.assertIn("error_type", result.__dict__)
+        self.assertIn("error", result.__dict__)
+
 
 
 if __name__ == "__main__":

@@ -14,7 +14,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agent.email_sender import SendResult, _validate_attachment, send_plain_email
+from agent.email_sender import _validate_attachment, send_plain_email
+from agent.tool_result import ToolResult
 
 _TESTS_DIR = Path(__file__).resolve().parent
 
@@ -110,7 +111,7 @@ class EmailWithAttachmentTests(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertIn("data.csv", result.attachment_names)
+        self.assertIn("data.csv", result.result.get("attachment_names", []))
 
     @patch("agent.email_sender.smtplib.SMTP_SSL")
     def test_sends_email_with_multiple_attachments(self, mock_smtp: MagicMock) -> None:
@@ -128,9 +129,10 @@ class EmailWithAttachmentTests(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(len(result.attachment_names), 2)
-        self.assertIn("a.txt", result.attachment_names)
-        self.assertIn("b.txt", result.attachment_names)
+        att_names = result.result.get("attachment_names", [])
+        self.assertEqual(len(att_names), 2)
+        self.assertIn("a.txt", att_names)
+        self.assertIn("b.txt", att_names)
 
     # ── 附件被拒 ──────────────────────────────────────────────
 
@@ -196,7 +198,7 @@ class EmailWithAttachmentTests(unittest.TestCase):
         result = send_plain_email(to_address="receiver@qq.com")
 
         self.assertTrue(result.success)
-        self.assertEqual(result.attachment_names, [])
+        self.assertEqual(result.result.get("attachment_names", []), [])
 
 
 if __name__ == "__main__":

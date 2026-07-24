@@ -15,7 +15,6 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from agent.email_sender import send_plain_email
-from agent.logger import log_email_cancelled
 
 
 def _print_preview(
@@ -113,11 +112,16 @@ def main() -> int:
         confirmed = _prompt_confirm()
         if not confirmed:
             print("\n  已取消发送。")
-            log_email_cancelled(
-                to_address=to_address,
-                subject=subject,
-                reason="用户在确认环节取消",
+            from agent.tool_result import ToolResult, ErrorType, write_audit_log
+            tr = ToolResult(
+                success=False,
+                tool_name="send_email",
+                params={"to_address": to_address, "subject": subject, "body_length": len(body)},
+                result={"to_address": to_address, "subject": subject},
+                error_type=ErrorType.VALIDATION,
+                error="用户在确认环节取消",
             )
+            write_audit_log(tr)
             return 1
 
     # ── 发送（内容与预览完全一致） ───────────────────────────
@@ -132,24 +136,36 @@ def main() -> int:
         if args.json:
             import json
             print(json.dumps({
-                "to_address": result.to_address,
-                "subject": result.subject,
                 "success": result.success,
+                "tool_name": result.tool_name,
+                "params": result.params,
+                "result": result.result,
+                "error_type": result.error_type,
                 "error": result.error,
-                "attachment_names": result.attachment_names,
+                "timestamp": result.timestamp,
+                "audit_id": result.audit_id,
             }, ensure_ascii=False, indent=2))
         elif result.success:
-            print(f"\n  邮件发送成功！收件人: {result.to_address}")
-            if result.attachment_names:
-                print(f"  附件: {', '.join(result.attachment_names)}")
+            print(f"\n  邮件发送成功！收件人: {result.result.get('to_address', '')}")
+            att_names = result.result.get("attachment_names", [])
+            if att_names:
+                print(f"  附件: {', '.join(att_names)}")
         else:
             print(f"\n  邮件发送失败: {result.error}", file=sys.stderr)
 
         return 0 if result.success else 1
 
     except Exception as error:
-        from agent.logger import log_email_send
-        log_email_send(to_address=to_address, subject=subject, success=False, error=str(error))
+        from agent.tool_result import ToolResult, ErrorType, write_audit_log
+        tr = ToolResult(
+            success=False,
+            tool_name="send_email",
+            params={"to_address": to_address, "subject": subject, "body_length": len(body)},
+            result={},
+            error_type=ErrorType.SYSTEM,
+            error=str(error),
+        )
+        write_audit_log(tr)
         print(f"\n  发送异常: {error}", file=sys.stderr)
         return 1
 

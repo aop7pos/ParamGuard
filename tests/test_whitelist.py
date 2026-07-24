@@ -14,7 +14,7 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 
-from agent.email_sender import SendResult, send_plain_email
+from agent.email_sender import send_plain_email
 
 
 class WhitelistTests(unittest.TestCase):
@@ -95,25 +95,27 @@ class WhitelistTests(unittest.TestCase):
     # ── 拒绝日志 ──────────────────────────────────────────────
 
     @patch("agent.email_sender.load_whitelist")
-    @patch("agent.email_sender.log_email_rejected")
+    @patch("agent.email_sender.write_audit_log")
     def test_rejection_is_logged(
         self, mock_log: MagicMock, mock_whitelist: MagicMock
     ) -> None:
-        """被拒绝时应记录目标邮箱和拒绝原因。"""
+        """被拒绝时应记录目标邮箱和拒绝原因到统一审计日志。"""
         mock_whitelist.return_value = ["safe@qq.com"]
 
         send_plain_email(to_address="bad@qq.com", subject="拦截测试")
 
         mock_log.assert_called_once()
-        call_args = mock_log.call_args.kwargs
-        self.assertEqual(call_args["to_address"], "bad@qq.com")
-        self.assertEqual(call_args["subject"], "拦截测试")
-        self.assertIn("不在白名单中", call_args["reason"])
+        tr = mock_log.call_args[0][0]  # ToolResult passed as first arg
+        self.assertEqual(tr.tool_name, "send_email")
+        self.assertFalse(tr.success)
+        self.assertEqual(tr.error_type, "whitelist")
+        self.assertIn("不在白名单中", tr.error)
+        self.assertIn("bad@qq.com", tr.error)
 
     # ── 日志不含敏感信息 ─────────────────────────────────────
 
     @patch("agent.email_sender.load_whitelist")
-    @patch("agent.email_sender.log_email_rejected")
+    @patch("agent.email_sender.write_audit_log")
     def test_rejection_log_no_sensitive_data(
         self, mock_log: MagicMock, mock_whitelist: MagicMock
     ) -> None:
@@ -122,10 +124,10 @@ class WhitelistTests(unittest.TestCase):
 
         send_plain_email(to_address="bad@qq.com")
 
-        call_args = mock_log.call_args.kwargs
-        self.assertNotIn("auth_code", call_args)
-        self.assertNotIn("QQ_EMAIL_AUTH_CODE", str(call_args))
-        self.assertNotIn("password", str(call_args))
+        tr = mock_log.call_args[0][0]
+        self.assertNotIn("auth_code", tr.params)
+        self.assertNotIn("password", str(tr.params))
+        self.assertNotIn("QQ_EMAIL_AUTH_CODE", str(tr.params))
 
     # ── 多地址白名单 ─────────────────────────────────────────
 

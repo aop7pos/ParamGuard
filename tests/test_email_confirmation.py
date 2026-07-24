@@ -17,7 +17,8 @@ import unittest
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
-from agent.email_sender import SendResult, send_plain_email
+from agent.email_sender import send_plain_email
+from agent.tool_result import ToolResult
 
 
 def _extract_body_from_mime(raw_message: str) -> str:
@@ -104,41 +105,50 @@ class EmailConfirmationTests(unittest.TestCase):
 
     # ── 取消日志 ──────────────────────────────────────────────
 
-    @patch("agent.logger.log_email_cancelled")
-    def test_log_email_cancelled_writes_correct_fields(
+    @patch("agent.tool_result.write_audit_log")
+    def test_cancellation_writes_unified_audit(
         self, mock_log: MagicMock
     ) -> None:
-        """取消日志应包含收件人、主题和取消原因。"""
-        from agent.logger import log_email_cancelled
+        """取消时应写入统一审计日志（ToolResult 格式）。"""
+        from agent.tool_result import ToolResult, ErrorType, write_audit_log
 
-        log_email_cancelled(
-            to_address="r@qq.com",
-            subject="测试取消",
-            reason="用户在确认环节取消",
+        tr = ToolResult(
+            success=False,
+            tool_name="send_email",
+            params={"to_address": "r@qq.com", "subject": "测试取消", "body_length": 0},
+            result={"to_address": "r@qq.com", "subject": "测试取消"},
+            error_type=ErrorType.VALIDATION,
+            error="用户在确认环节取消",
         )
+        write_audit_log(tr)
 
-        mock_log.assert_called_once_with(
-            to_address="r@qq.com",
-            subject="测试取消",
-            reason="用户在确认环节取消",
-        )
+        mock_log.assert_called_once()
+        logged = mock_log.call_args[0][0]
+        self.assertEqual(logged.tool_name, "send_email")
+        self.assertFalse(logged.success)
+        self.assertEqual(logged.error, "用户在确认环节取消")
 
-    @patch("agent.logger.log_email_cancelled")
-    def test_log_email_cancelled_no_sensitive_data(
+    @patch("agent.tool_result.write_audit_log")
+    def test_cancellation_log_no_sensitive_data(
         self, mock_log: MagicMock
     ) -> None:
-        """取消日志不应包含授权码等敏感信息。"""
-        from agent.logger import log_email_cancelled
+        """取消审计日志不应包含授权码等敏感信息。"""
+        from agent.tool_result import ToolResult, ErrorType, write_audit_log
 
-        log_email_cancelled(
-            to_address="r@qq.com",
-            subject="安全测试",
+        tr = ToolResult(
+            success=False,
+            tool_name="send_email",
+            params={"to_address": "r@qq.com", "subject": "安全测试", "body_length": 0},
+            result={"to_address": "r@qq.com", "subject": "安全测试"},
+            error_type=ErrorType.VALIDATION,
+            error="用户在确认环节取消",
         )
+        write_audit_log(tr)
 
-        call_args = mock_log.call_args.kwargs
-        self.assertNotIn("auth_code", call_args)
-        self.assertNotIn("password", call_args)
-        self.assertNotIn("QQ_EMAIL", str(call_args))
+        logged = mock_log.call_args[0][0]
+        self.assertNotIn("auth_code", logged.params)
+        self.assertNotIn("password", str(logged.params))
+        self.assertNotIn("QQ_EMAIL", str(logged.params))
 
     # ── 未确认绝不发送 ───────────────────────────────────────
 
@@ -152,15 +162,15 @@ class EmailConfirmationTests(unittest.TestCase):
     # ── 返回结果一致性 ───────────────────────────────────────
 
     def test_failure_result_contains_to_and_subject(self) -> None:
-        """失败时的 SendResult 应包含原始收件人和主题。"""
+        """失败时的 ToolResult 应包含原始收件人和主题。"""
         result = send_plain_email(to_address="  ")
 
         self.assertFalse(result.success)
-        self.assertIn("  ", result.to_address)
+        self.assertIn("  ", result.result.get("to_address", ""))
 
     @patch("agent.email_sender.smtplib.SMTP_SSL")
     def test_success_result_matches_input(self, mock_smtp_class: MagicMock) -> None:
-        """成功时 SendResult 的 to_address 和 subject 应与输入一致。"""
+        """成功时 ToolResult 的 to_address 和 subject 应与输入一致。"""
         mock_server = MagicMock()
         mock_smtp_class.return_value.__enter__.return_value = mock_server
 
@@ -171,8 +181,8 @@ class EmailConfirmationTests(unittest.TestCase):
         )
 
         self.assertTrue(result.success)
-        self.assertEqual(result.to_address, "target@qq.com")
-        self.assertEqual(result.subject, "结果验证")
+        self.assertEqual(result.result.get("to_address"), "target@qq.com")
+        self.assertEqual(result.result.get("subject"), "结果验证")
 
 
 if __name__ == "__main__":
