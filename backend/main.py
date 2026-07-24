@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import os
+import queue
 import sys
 import threading
 import time
@@ -18,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -46,6 +48,35 @@ app.add_middleware(
 
 _tasks: dict[str, dict[str, Any]] = {}
 _tasks_lock = threading.Lock()
+
+# WebSocket 事件总线：task_id → queue.Queue
+_event_queues: dict[str, queue.Queue[dict[str, Any]]] = {}
+_queues_lock = threading.Lock()
+
+
+def _publish_event(task_id: str, event: dict[str, Any]) -> None:
+    """向指定任务的所有 WebSocket 订阅者推送事件。"""
+    event.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+    event.setdefault("event_id", str(uuid.uuid4()))
+    with _queues_lock:
+        q = _event_queues.get(task_id)
+    if q is not None:
+        q.put(event)
+
+
+def _register_subscriber(task_id: str) -> queue.Queue[dict[str, Any]]:
+    """注册 WebSocket 订阅者，返回专属队列。"""
+    q: queue.Queue[dict[str, Any]] = queue.Queue()
+    with _queues_lock:
+        if task_id not in _event_queues:
+            _event_queues[task_id] = q
+    return q
+
+
+def _unregister_subscriber(task_id: str) -> None:
+    """取消订阅（最后一个 WebSocket 断开时清理）。"""
+    with _queues_lock:
+        _event_queues.pop(task_id, None)
 
 
 class TaskRequest(BaseModel):
@@ -250,6 +281,52 @@ def health() -> dict[str, str]:
 
 
 # ═══════════════════════════════════════════════════════════════
+# WebSocket
+# ═══════════════════════════════════════════════════════════════
+
+@app.websocket("/ws/tasks/{task_id}")
+async def ws_task(websocket: WebSocket, task_id: str):
+    await websocket.accept()
+    q = _register_subscriber(task_id)
+
+    try:
+        # 先推送已有步骤（重连时不丢失历史）
+        with _tasks_lock:
+            t = _tasks.get(task_id)
+        if t:
+            for s in t.get("steps", []):
+                await websocket.send_json({
+                    "type": "step_sync",
+                    "task_id": task_id,
+                    "step": s,
+                })
+            await websocket.send_json({
+                "type": "task_status",
+                "task_id": task_id,
+                "status": t.get("status"),
+                "email_draft": t.get("email_draft"),
+            })
+
+        # 实时推送新事件
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                event = await loop.run_in_executor(None, lambda: q.get(timeout=30))
+                await websocket.send_json(event)
+            except queue.Empty:
+                # 30 秒无事件发心跳
+                await websocket.send_json({"type": "heartbeat", "task_id": task_id})
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        _unregister_subscriber(task_id)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ═══════════════════════════════════════════════════════════════
 # 任务路由
 # ═══════════════════════════════════════════════════════════════
 
@@ -279,11 +356,32 @@ def create_task(body: TaskRequest) -> dict[str, Any]:
         try:
             agent = ParamGuardAgent(confirm_fn=lambda _draft: False)
 
+            # 事件：任务开始
+            _publish_event(task_id, {
+                "type": "task_started",
+                "task_id": task_id,
+                "summary": f"开始执行: {request_text[:80]}",
+            })
+
+            # 事件：规划中
+            _publish_event(task_id, {
+                "type": "planning_started",
+                "task_id": task_id,
+                "summary": "正在分析意图并生成执行计划",
+            })
+
             # 步骤 0：意图理解
             _append_step(task_id, _make_step(task_id, 0, "理解用户意图", "agent", "success",
                 params={"request": request_text},
                 result={"intent": "已解析"},
                 checks=[{"name": "意图安全审查", "passed": True}]))
+            _publish_event(task_id, {
+                "type": "tool_completed",
+                "task_id": task_id,
+                "step_id": f"step-{task_id}-0",
+                "tool_name": "agent",
+                "summary": "意图理解完成",
+            })
 
             # 解析并展示计划
             plan = agent._parse_request(request_text)
@@ -297,11 +395,29 @@ def create_task(body: TaskRequest) -> dict[str, Any]:
                         {"name": "文件范围限制", "passed": True},
                         {"name": "收件人白名单", "passed": True, "detail": "已配置"},
                     ]))
+                _publish_event(task_id, {
+                    "type": "planning_started",
+                    "task_id": task_id,
+                    "summary": f"执行计划: {', '.join(descs)}",
+                    "plan": descs,
+                })
 
             # 逐步执行
             step_idx = 0
             for pstep in (plan or []):
                 step_idx += 1
+                step_id = f"step-{task_id}-{step_idx}"
+                tool_name = _step_tool_name(pstep)
+
+                # 事件：工具开始
+                _publish_event(task_id, {
+                    "type": "tool_started",
+                    "task_id": task_id,
+                    "step_id": step_id,
+                    "tool_name": tool_name,
+                    "summary": pstep.description,
+                })
+
                 tr = agent._execute_step(pstep)
 
                 if pstep.kind == StepKind.EMAIL:
@@ -341,23 +457,73 @@ def create_task(body: TaskRequest) -> dict[str, Any]:
                             }
                             t["email_draft"] = draft_obj
                             t["status"] = "awaiting_confirmation"
+
+                    # 事件：等待确认
+                    _publish_event(task_id, {
+                        "type": "confirmation_required",
+                        "task_id": task_id,
+                        "step_id": step_id,
+                        "tool_name": "send_email",
+                        "summary": f"邮件草稿已生成，等待确认: {tr.result.get('to_address', '')}",
+                        "email_draft": draft_obj,
+                    })
                     break  # 停在草稿，不继续
 
                 # 普通步骤
+                success = tr.success
+                error_type = tr.error_type
                 sdict = _make_step(task_id, step_idx,
                     _step_name(tr.tool_name), tr.tool_name,
-                    "success" if tr.success else ("blocked" if tr.error_type in ("whitelist", "permission") else "failed"),
+                    "success" if success else ("blocked" if error_type in ("whitelist", "permission") else "failed"),
                     params=_safe_params(tr.params),
                     result=_safe_result(tr.result, tr.tool_name),
                     checks=_build_checks(tr),
-                    error=tr.error if not tr.success else "")
+                    error=tr.error if not success else "")
                 _append_step(task_id, sdict)
 
-                if not tr.success:
+                # 事件：工具结果
+                if success:
+                    _publish_event(task_id, {
+                        "type": "tool_completed",
+                        "task_id": task_id,
+                        "step_id": step_id,
+                        "tool_name": tool_name,
+                        "summary": f"{pstep.description} — 完成",
+                    })
+                    _publish_event(task_id, {
+                        "type": "security_check_passed",
+                        "task_id": task_id,
+                        "step_id": step_id,
+                        "tool_name": tool_name,
+                        "summary": "安全检查通过",
+                    })
+                elif error_type in ("whitelist", "permission"):
+                    _publish_event(task_id, {
+                        "type": "security_check_blocked",
+                        "task_id": task_id,
+                        "step_id": step_id,
+                        "tool_name": tool_name,
+                        "summary": tr.error,
+                    })
+                else:
+                    _publish_event(task_id, {
+                        "type": "tool_failed",
+                        "task_id": task_id,
+                        "step_id": step_id,
+                        "tool_name": tool_name,
+                        "summary": tr.error,
+                    })
+
+                if not success:
                     with _tasks_lock:
                         t = _tasks.get(task_id)
                         if t is not None:
                             t["status"] = "failed"
+                    _publish_event(task_id, {
+                        "type": "task_failed",
+                        "task_id": task_id,
+                        "summary": f"任务失败: {tr.error}",
+                    })
                     break
 
             # 全部成功
@@ -365,6 +531,11 @@ def create_task(body: TaskRequest) -> dict[str, Any]:
                 t = _tasks.get(task_id)
                 if t is not None and t["status"] == "running":
                     t["status"] = "completed"
+                    _publish_event(task_id, {
+                        "type": "task_completed",
+                        "task_id": task_id,
+                        "summary": "任务执行完成",
+                    })
 
         except Exception as exc:
             with _tasks_lock:
@@ -373,6 +544,11 @@ def create_task(body: TaskRequest) -> dict[str, Any]:
                     t["status"] = "failed"
                     t["steps"].append(_make_step(task_id, "error", "执行异常", "agent", "failed",
                         error=str(exc)))
+            _publish_event(task_id, {
+                "type": "task_failed",
+                "task_id": task_id,
+                "summary": f"执行异常: {exc}",
+            })
 
         finally:
             with _tasks_lock:
@@ -463,6 +639,18 @@ def confirm_task(task_id: str) -> dict[str, Any]:
             t["steps"].append(_make_step(task_id, "confirm", "确认发送", "send_email", "blocked",
                 error=f"收件人不在白名单中: {to_addr}",
                 checks=[{"name": "收件人白名单检查", "passed": False, "detail": f"{to_addr} 不在白名单中"}]))
+        _publish_event(task_id, {
+            "type": "security_check_blocked",
+            "task_id": task_id,
+            "step_id": f"step-{task_id}-confirm",
+            "tool_name": "send_email",
+            "summary": f"收件人不在白名单中: {to_addr}",
+        })
+        _publish_event(task_id, {
+            "type": "task_failed",
+            "task_id": task_id,
+            "summary": f"发送被拦截: 收件人 {to_addr} 不在白名单中",
+        })
         return {
             "success": False,
             "error_type": "whitelist",
@@ -515,6 +703,17 @@ def confirm_task(task_id: str) -> dict[str, Any]:
                         ],
                     }
             t["steps"].append(_make_step(task_id, "done", "执行完成", "agent", "success"))
+            _publish_event(task_id, {
+                "type": "email_sent",
+                "task_id": task_id,
+                "step_id": f"step-{task_id}-sending",
+                "summary": f"邮件已发送至: {to_addr}",
+            })
+            _publish_event(task_id, {
+                "type": "task_completed",
+                "task_id": task_id,
+                "summary": "任务完成，邮件已发送",
+            })
         else:
             t["status"] = "failed"
             for s in t["steps"]:
@@ -548,6 +747,13 @@ def cancel_task(task_id: str) -> dict[str, Any]:
         t["status"] = "cancelled"
         t["steps"].append(_make_step(task_id, "cancel", "取消发送", "send_email", "cancelled",
             error="用户取消发送"))
+
+    _publish_event(task_id, {
+        "type": "task_failed",
+        "task_id": task_id,
+        "step_id": f"step-{task_id}-cancel",
+        "summary": "用户取消发送",
+    })
 
     return {"success": True}
 
@@ -590,6 +796,18 @@ def _append_step(task_id: str, step: dict[str, Any]) -> None:
 
 def _step_name(tool: str) -> str:
     return {"search_files": "搜索文件", "read_file": "读取文件内容", "send_email": "生成邮件草稿"}.get(tool, f"调用 {tool}")
+
+
+def _step_tool_name(pstep) -> str:
+    """从 PlanStep 推断工具名称。"""
+    kind = pstep.kind
+    if kind == StepKind.SEARCH:
+        return "search_files"
+    elif kind == StepKind.READ:
+        return "read_file"
+    elif kind == StepKind.EMAIL:
+        return "send_email"
+    return "agent"
 
 
 def _safe_result(result: dict[str, Any], tool: str) -> dict[str, Any]:

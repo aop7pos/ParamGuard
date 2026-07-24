@@ -1,8 +1,11 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { Wifi, WifiOff } from 'lucide-react';
 import TaskInput from '@/components/workbench/TaskInput';
 import Timeline from '@/components/workbench/Timeline';
 import ConfirmationDialog from '@/components/email/ConfirmationDialog';
 import { createTask, getTask, getTaskSteps, confirmTask, cancelTask } from '@/services/dataService';
+import { useWebSocket } from '@/hooks/useWebSocket';
+import type { ConnectionStatus } from '@/hooks/useWebSocket';
 import { mockEmailDraft } from '@/services/mockData';
 import type { TaskStep, EmailDraft } from '@/types';
 
@@ -32,81 +35,116 @@ export default function WorkbenchPage() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [emailDraft, setEmailDraft] = useState<EmailDraft>(mockEmailDraft);
+  const [wsMode, setWsMode] = useState(true);
   const taskIdRef = useRef<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
+  const wsReadyRef = useRef(false);
+  const fallbackTimer = useRef<ReturnType<typeof setTimeout>>();
 
   const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = undefined;
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = undefined; }
+  }, []);
+
+  const startPolling = useCallback((taskId: string) => {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const rawSteps = await getTaskSteps(taskId);
+        setSteps(rawSteps.map(apiStepToTaskStep));
+        const task = await getTask(taskId);
+        const status = String(task.status ?? 'running');
+        if (status === 'awaiting_confirmation') {
+          stopPolling(); setRunning(false);
+          const draft = task.email_draft as Record<string, unknown> | undefined;
+          if (draft) setEmailDraft(mapDraft(draft));
+          setShowConfirm(true);
+        } else if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+          stopPolling(); setRunning(false);
+        }
+      } catch { /* ignore */ }
+    }, 500);
+  }, [stopPolling]);
+
+  const onWsEvent = useCallback((event: Record<string, unknown>) => {
+    const type = String(event.type ?? '');
+    const taskId = String(event.task_id ?? '');
+
+    switch (type) {
+      case 'step_sync': {
+        const step = event.step as Record<string, unknown> | undefined;
+        if (step) {
+          setSteps((prev) => {
+            const exists = prev.some((s) => s.id === String(step.id ?? ''));
+            if (exists) return prev.map((s) => s.id === String(step.id ?? '') ? apiStepToTaskStep(step) : s);
+            return [...prev, apiStepToTaskStep(step)];
+          });
+        }
+        break;
+      }
+      case 'task_status': {
+        const st = String(event.status ?? '');
+        if (st === 'awaiting_confirmation') {
+          setRunning(false);
+          const draft = event.email_draft as Record<string, unknown> | undefined;
+          if (draft) setEmailDraft(mapDraft(draft));
+          setShowConfirm(true);
+        } else if (st === 'completed' || st === 'failed' || st === 'cancelled') {
+          setRunning(false);
+        }
+        break;
+      }
+      case 'confirmation_required': {
+        const draft = event.email_draft as Record<string, unknown> | undefined;
+        if (draft) setEmailDraft(mapDraft(draft));
+        setShowConfirm(true);
+        break;
+      }
+      case 'task_completed':
+      case 'task_failed':
+        setRunning(false);
+        break;
     }
   }, []);
 
-  useEffect(() => {
-    return () => stopPolling();
+  const handleWsStatus = useCallback((status: ConnectionStatus) => {
+    if (status === 'connected') {
+      wsReadyRef.current = true;
+      if (fallbackTimer.current) { clearTimeout(fallbackTimer.current); fallbackTimer.current = undefined; }
+      setWsMode(true);
+      stopPolling();
+    }
   }, [stopPolling]);
 
+  const { status: wsStatus } = useWebSocket({
+    taskId: running || showConfirm ? taskIdRef.current : null,
+    onEvent: onWsEvent,
+    onStatusChange: handleWsStatus,
+  });
+
+  useEffect(() => { return () => { stopPolling(); if (fallbackTimer.current) clearTimeout(fallbackTimer.current); }; }, [stopPolling]);
+
   const handleSubmit = async (request: string) => {
-    setRunning(true);
-    setSteps([]);
-    setShowConfirm(false);
-    stopPolling();
+    setRunning(true); setSteps([]); setShowConfirm(false);
+    stopPolling(); wsReadyRef.current = false;
+    if (fallbackTimer.current) clearTimeout(fallbackTimer.current);
 
     try {
       const taskId = await createTask(request);
       taskIdRef.current = taskId;
 
-      // 开始轮询
-      pollRef.current = setInterval(async () => {
-        try {
-          const rawSteps = await getTaskSteps(taskId);
-          const mapped = rawSteps.map(apiStepToTaskStep);
-          setSteps(mapped);
-
-          // 检查任务状态
-          const task = await getTask(taskId);
-          const status = String(task.status ?? 'running');
-
-          if (status === 'awaiting_confirmation') {
-            stopPolling();
-            setRunning(false);
-            // 使用后端返回的草稿
-            const draft = task.email_draft as Record<string, unknown> | undefined;
-            if (draft) {
-              setEmailDraft({
-                fromAddress: String(draft.from_address ?? ''),
-                toAddress: String(draft.to_address ?? ''),
-                subject: String(draft.subject ?? ''),
-                body: String(draft.body ?? ''),
-                attachments: (draft.attachments ?? []) as EmailDraft['attachments'],
-                whitelistCheck: Boolean(draft.whitelist_check ?? true),
-                filePermissionCheck: Boolean(draft.file_permission_check ?? true),
-                sensitiveDataFound: Boolean(draft.sensitive_data_found ?? false),
-                sensitiveDataDetails: (draft.sensitive_data_details ?? []) as string[],
-              });
-            }
-            setShowConfirm(true);
-          } else if (status === 'completed' || status === 'failed') {
-            stopPolling();
-            setRunning(false);
-          }
-        } catch {
-          // 轮询失败静默继续
+      // 3 秒后若 WS 仍未连接，回退到轮询
+      fallbackTimer.current = setTimeout(() => {
+        if (!wsReadyRef.current && taskIdRef.current === taskId) {
+          setWsMode(false);
+          startPolling(taskId);
         }
-      }, 500);
+      }, 3000);
     } catch (err) {
       setRunning(false);
       setSteps([{
-        id: 'error',
-        taskId: '',
-        name: '启动失败',
-        toolName: 'agent',
-        status: 'failed',
-        startTime: new Date().toISOString(),
-        params: {},
-        result: {},
-        securityCheck: { passed: false, checks: [] },
-        error: String(err),
+        id: 'error', taskId: '', name: '启动失败', toolName: 'agent', status: 'failed',
+        startTime: new Date().toISOString(), params: {}, result: {},
+        securityCheck: { passed: false, checks: [] }, error: String(err),
       }]);
     }
   };
@@ -116,40 +154,20 @@ export default function WorkbenchPage() {
     setConfirming(true);
     try {
       const res = await confirmTask(taskIdRef.current);
-      const success = Boolean(res.success);
-      setShowConfirm(false);
+      setShowConfirm(false); setConfirming(false);
+      const rawSteps = await getTaskSteps(taskIdRef.current);
+      setSteps(rawSteps.map(apiStepToTaskStep));
+    } catch {
       setConfirming(false);
-
-      if (success) {
-        // 刷新步骤展示真实发送结果
-        const rawSteps = await getTaskSteps(taskIdRef.current);
-        setSteps(rawSteps.map(apiStepToTaskStep));
-      } else {
-        // 被拦截
-        const rawSteps = await getTaskSteps(taskIdRef.current);
-        setSteps(rawSteps.map(apiStepToTaskStep));
-      }
-    } catch (err) {
-      setConfirming(false);
-      // 刷新步骤展示后端错误
-      try {
-        const rawSteps = await getTaskSteps(taskIdRef.current);
-        setSteps(rawSteps.map(apiStepToTaskStep));
-      } catch {}
+      try { const rawSteps = await getTaskSteps(taskIdRef.current); setSteps(rawSteps.map(apiStepToTaskStep)); } catch {}
     }
   };
 
   const handleCancel = async () => {
     if (!taskIdRef.current) return;
-    try {
-      await cancelTask(taskIdRef.current);
-    } catch {}
+    try { await cancelTask(taskIdRef.current); } catch {}
     setShowConfirm(false);
-    // 刷新步骤展示取消状态
-    try {
-      const rawSteps = await getTaskSteps(taskIdRef.current);
-      setSteps(rawSteps.map(apiStepToTaskStep));
-    } catch {}
+    try { const rawSteps = await getTaskSteps(taskIdRef.current); setSteps(rawSteps.map(apiStepToTaskStep)); } catch {}
   };
 
   const hasPendingConfirmation = steps.some((s) => s.status === 'awaiting_confirmation');
@@ -157,9 +175,22 @@ export default function WorkbenchPage() {
 
   return (
     <div className="p-6 max-w-3xl animate-fade-in">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold text-text-primary mb-1">Agent 工作台</h1>
-        <p className="text-sm text-text-muted">输入自然语言指令，Agent 将自动选择工具并执行</p>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-xl font-semibold text-text-primary mb-1">Agent 工作台</h1>
+          <p className="text-sm text-text-muted">输入自然语言指令，Agent 将自动选择工具并执行</p>
+        </div>
+        {/* 连接状态 */}
+        {isActive && (
+          <div className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border ${
+            wsStatus === 'connected' ? 'border-success/30 text-success bg-success-soft' :
+            wsStatus === 'connecting' ? 'border-warning/30 text-warning bg-warning-soft' :
+            'border-text-muted/30 text-text-muted bg-bg-tertiary'
+          }`}>
+            {wsStatus === 'connected' ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+            {wsStatus === 'connected' ? '实时' : wsStatus === 'connecting' ? '连接中' : wsMode ? '重连中' : '轮询'}
+          </div>
+        )}
       </div>
 
       <TaskInput onSubmit={handleSubmit} disabled={isActive} />
@@ -169,19 +200,24 @@ export default function WorkbenchPage() {
           <div className={`w-2 h-2 rounded-full ${running ? 'bg-accent animate-pulse-dot' : steps.length > 0 ? 'bg-success' : 'bg-text-muted'}`} />
           <h2 className="text-sm font-medium text-text-secondary">执行时间线</h2>
         </div>
-        <Timeline
-          steps={steps}
-          emptyMessage={running ? '正在执行…' : '输入指令开始执行'}
-        />
+        <Timeline steps={steps} emptyMessage={running ? '正在执行…' : '输入指令开始执行'} />
       </div>
 
-      <ConfirmationDialog
-        open={showConfirm}
-        draft={emailDraft}
-        onConfirm={handleConfirm}
-        onCancel={handleCancel}
-        confirming={confirming}
-      />
+      <ConfirmationDialog open={showConfirm} draft={emailDraft} onConfirm={handleConfirm} onCancel={handleCancel} confirming={confirming} />
     </div>
   );
+}
+
+function mapDraft(draft: Record<string, unknown>): EmailDraft {
+  return {
+    fromAddress: String(draft.from_address ?? ''),
+    toAddress: String(draft.to_address ?? ''),
+    subject: String(draft.subject ?? ''),
+    body: String(draft.body ?? ''),
+    attachments: (draft.attachments ?? []) as EmailDraft['attachments'],
+    whitelistCheck: Boolean(draft.whitelist_check ?? true),
+    filePermissionCheck: Boolean(draft.file_permission_check ?? true),
+    sensitiveDataFound: Boolean(draft.sensitive_data_found ?? false),
+    sensitiveDataDetails: (draft.sensitive_data_details ?? []) as string[],
+  };
 }
