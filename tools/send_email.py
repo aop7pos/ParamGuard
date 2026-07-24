@@ -1,6 +1,7 @@
 """发送测试邮件的命令行工具。
 
-**必须手动触发，不会自动执行。**
+**必须手动确认后才会真正发送。**
+未确认时仅展示预览，取消后记录日志，绝不会发信。
 """
 
 from __future__ import annotations
@@ -14,10 +15,35 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from agent.email_sender import send_plain_email
+from agent.logger import log_email_cancelled
+
+
+def _print_preview(to_address: str, subject: str, body: str) -> None:
+    """展示待发送邮件的预览。"""
+    print("=" * 50)
+    print("  📧 待发送邮件预览")
+    print("=" * 50)
+    print(f"  收件人: {to_address}")
+    print(f"  主  题: {subject}")
+    print("-" * 50)
+    print(body)
+    print("=" * 50)
+
+
+def _prompt_confirm() -> bool:
+    """询问用户是否确认发送，返回 True 表示确认。"""
+    try:
+        answer = input("  确认发送？(yes/no): ").strip().lower()
+        return answer in ("yes", "y")
+    except (EOFError, KeyboardInterrupt):
+        # 处理管道输入或 Ctrl+C。
+        return False
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="使用 QQ 邮箱发送纯文本测试邮件")
+    parser = argparse.ArgumentParser(
+        description="使用 QQ 邮箱发送纯文本测试邮件（需手动确认）",
+    )
     parser.add_argument(
         "-t", "--to",
         default="1962383827@qq.com",
@@ -34,17 +60,53 @@ def main() -> int:
         help="邮件正文",
     )
     parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="跳过确认，直接发送",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="仅预览，不发送",
+    )
+    parser.add_argument(
         "-j", "--json",
         action="store_true",
         help="以 JSON 格式输出结果",
     )
     args = parser.parse_args()
 
+    to_address = args.to.strip()
+    subject = args.subject
+    body = args.body
+
+    # ── 预览 ──────────────────────────────────────────────────
+    if not args.json:
+        _print_preview(to_address, subject, body)
+
+    # ── 仅预览模式 ────────────────────────────────────────────
+    if args.dry_run:
+        print("\n  (dry-run 模式，未实际发送)")
+        return 0
+
+    # ── 确认 ──────────────────────────────────────────────────
+    if not args.yes:
+        confirmed = _prompt_confirm()
+        if not confirmed:
+            print("\n  已取消发送。")
+            log_email_cancelled(
+                to_address=to_address,
+                subject=subject,
+                reason="用户在确认环节取消",
+            )
+            return 1
+
+    # ── 发送（内容与预览完全一致） ───────────────────────────
     try:
         result = send_plain_email(
-            to_address=args.to,
-            subject=args.subject,
-            body=args.body,
+            to_address=to_address,
+            subject=subject,
+            body=body,
         )
 
         if args.json:
@@ -56,16 +118,16 @@ def main() -> int:
                 "error": result.error,
             }, ensure_ascii=False, indent=2))
         elif result.success:
-            print(f"邮件发送成功！收件人: {result.to_address}")
+            print(f"\n  邮件发送成功！收件人: {result.to_address}")
         else:
-            print(f"邮件发送失败: {result.error}", file=sys.stderr)
+            print(f"\n  邮件发送失败: {result.error}", file=sys.stderr)
 
         return 0 if result.success else 1
 
     except Exception as error:
         from agent.logger import log_email_send
-        log_email_send(to_address=args.to, subject=args.subject, success=False, error=str(error))
-        print(f"发送异常: {error}", file=sys.stderr)
+        log_email_send(to_address=to_address, subject=subject, success=False, error=str(error))
+        print(f"\n  发送异常: {error}", file=sys.stderr)
         return 1
 
 

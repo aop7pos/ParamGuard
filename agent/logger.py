@@ -124,3 +124,33 @@ def log_email_send(
         log_path = _LOGS_DIR / f"email_sends_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.log"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def log_email_cancelled(
+    *,
+    to_address: str,
+    subject: str,
+    reason: str = "用户取消发送",
+) -> None:
+    """记录一次邮件发送被取消的操作。
+
+    调用时机：用户在确认环节选择取消时立即调用。
+
+    Args:
+        to_address: 收件人邮箱地址。
+        subject: 邮件主题。
+        reason: 取消原因，默认为用户主动取消。
+    """
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": "cancelled",
+        "to": to_address,
+        "subject": subject,
+        "reason": reason,
+    }
+
+    with _LOCK:
+        _ensure_logs_dir()
+        log_path = _LOGS_DIR / f"email_sends_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.log"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
