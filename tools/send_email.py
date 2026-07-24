@@ -18,13 +18,22 @@ from agent.email_sender import send_plain_email
 from agent.logger import log_email_cancelled
 
 
-def _print_preview(to_address: str, subject: str, body: str) -> None:
-    """展示待发送邮件的预览。"""
+def _print_preview(
+    to_address: str,
+    subject: str,
+    body: str,
+    attachments: list[str] | None = None,
+) -> None:
+    """展示待发送邮件的预览，包含附件信息。"""
     print("=" * 50)
     print("  📧 待发送邮件预览")
     print("=" * 50)
     print(f"  收件人: {to_address}")
     print(f"  主  题: {subject}")
+    if attachments:
+        print(f"  附  件: {len(attachments)} 个")
+        for att in attachments:
+            print(f"    - {att}")
     print("-" * 50)
     print(body)
     print("=" * 50)
@@ -74,15 +83,25 @@ def main() -> int:
         action="store_true",
         help="以 JSON 格式输出结果",
     )
+    parser.add_argument(
+        "-a", "--attach",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="附件路径（可重复指定，仅允许 tests/ 目录内的文件）",
+    )
     args = parser.parse_args()
 
     to_address = args.to.strip()
     subject = args.subject
     body = args.body
+    attachment_paths = args.attach
+    # 仅取文件名用于预览（actual 校验在 send_plain_email 中完成）。
+    attachment_preview = [Path(p).name for p in attachment_paths]
 
     # ── 预览 ──────────────────────────────────────────────────
     if not args.json:
-        _print_preview(to_address, subject, body)
+        _print_preview(to_address, subject, body, attachment_preview)
 
     # ── 仅预览模式 ────────────────────────────────────────────
     if args.dry_run:
@@ -107,6 +126,7 @@ def main() -> int:
             to_address=to_address,
             subject=subject,
             body=body,
+            attachments=attachment_paths if attachment_paths else None,
         )
 
         if args.json:
@@ -116,9 +136,12 @@ def main() -> int:
                 "subject": result.subject,
                 "success": result.success,
                 "error": result.error,
+                "attachment_names": result.attachment_names,
             }, ensure_ascii=False, indent=2))
         elif result.success:
             print(f"\n  邮件发送成功！收件人: {result.to_address}")
+            if result.attachment_names:
+                print(f"  附件: {', '.join(result.attachment_names)}")
         else:
             print(f"\n  邮件发送失败: {result.error}", file=sys.stderr)
 

@@ -99,6 +99,8 @@ def log_email_send(
     subject: str,
     success: bool,
     error: str = "",
+    attachment_count: int = 0,
+    attachment_names: list[str] | None = None,
 ) -> None:
     """记录一次邮件发送操作。
 
@@ -110,14 +112,19 @@ def log_email_send(
         subject: 邮件主题。
         success: 是否发送成功。
         error: 失败时的错误描述，成功时为空字符串。
+        attachment_count: 附件数量。
+        attachment_names: 附件文件名列表。
     """
-    entry = {
+    entry: dict = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "to": to_address,
         "subject": subject,
         "success": success,
         "error": error,
     }
+    if attachment_count > 0:
+        entry["attachment_count"] = attachment_count
+        entry["attachment_names"] = attachment_names or []
 
     with _LOCK:
         _ensure_logs_dir()
