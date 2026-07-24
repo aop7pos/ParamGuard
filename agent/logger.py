@@ -53,3 +53,41 @@ def log_file_read(*, path: str, success: bool, error: str = "") -> None:
         _ensure_logs_dir()
         with open(_log_file_path(), "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def log_file_search(
+    *,
+    query: str,
+    search_dir: str,
+    match_count: int,
+    files_scanned: int,
+    files_skipped: int,
+    errors: list[str],
+) -> None:
+    """记录一次文件搜索操作。
+
+    调用时机：每次 ``search_files`` 执行完毕后立即调用。
+
+    Args:
+        query: 搜索关键词。
+        search_dir: 搜索范围目录。
+        match_count: 匹配到的结果数量。
+        files_scanned: 已扫描的文件数。
+        files_skipped: 跳过的文件数（无法读取等）。
+        errors: 跳过文件时的错误原因列表。
+    """
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "query": query,
+        "search_dir": search_dir,
+        "match_count": match_count,
+        "files_scanned": files_scanned,
+        "files_skipped": files_skipped,
+        "errors": errors,
+    }
+
+    with _LOCK:
+        _ensure_logs_dir()
+        log_path = _LOGS_DIR / f"file_searches_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.log"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")

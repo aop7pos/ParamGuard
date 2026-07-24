@@ -16,3 +16,6 @@ dist/
 
 # Logs (generated at runtime)
 logs/*.log
+
+# Environment (contains secrets, do NOT commit)
+.env
