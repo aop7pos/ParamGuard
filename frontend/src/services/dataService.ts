@@ -95,3 +95,18 @@ export async function fetchPolicies(): Promise<SecurityPolicy> {
     return mockPolicy;
   }
 }
+
+// ── 任务（仅真实 API，无 Mock 兜底）──────────────────────────
+
+export async function createTask(request: string): Promise<string> {
+  const data = await api.createTask(request);
+  return String(data.task_id);
+}
+
+export async function getTask(taskId: string): Promise<Record<string, unknown>> {
+  return api.getTask(taskId);
+}
+
+export async function getTaskSteps(taskId: string): Promise<Record<string, unknown>[]> {
+  return api.getTaskSteps(taskId);
+}
