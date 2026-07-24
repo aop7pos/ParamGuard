@@ -392,8 +392,7 @@ def create_task(body: TaskRequest) -> dict[str, Any]:
                     result={"steps": len(descs), "plan": descs},
                     checks=[
                         {"name": "工具权限检查", "passed": True},
-                        {"name": "文件范围限制", "passed": True},
-                        {"name": "收件人白名单", "passed": True, "detail": "已配置"},
+                        {"name": "文件范围限制", "passed": True, "detail": "仅限 tests/ 目录"},
                     ]))
                 _publish_event(task_id, {
                     "type": "planning_started",
@@ -438,6 +437,10 @@ def create_task(body: TaskRequest) -> dict[str, Any]:
                         t = _tasks.get(task_id)
                         if t is not None:
                             body_text = draft.get("body", "") if draft else ""
+                            # 从 _build_checks 提取真实检查结果
+                            checks = _build_checks(tr)
+                            wl_check = next((c for c in checks if "白名单" in c["name"]), None)
+                            wl_ok = wl_check["passed"] if wl_check else True
                             draft_obj = {
                                 "from_address": _load_env().get("QQ_EMAIL_ADDRESS", ""),
                                 "to_address": tr.result.get("to_address", ""),
@@ -447,7 +450,7 @@ def create_task(body: TaskRequest) -> dict[str, Any]:
                                     {"name": n, "path": "", "size_bytes": 0}
                                     for n in tr.result.get("attachment_names", [])
                                 ],
-                                "whitelist_check": True,
+                                "whitelist_check": wl_ok,
                                 "file_permission_check": True,
                                 "sensitive_data_found": False,
                                 "sensitive_data_details": [],
