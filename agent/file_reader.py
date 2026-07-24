@@ -34,6 +34,9 @@ def read_file_content(path: str | PathLike[str], *, encoding: str = "utf-8") -> 
     if isinstance(path, str):
         if not path.strip():
             raise ValueError("文件路径不能为空")
+        # 路径中包含空字节（\0）属于非法输入，常见于恶意构造的截断攻击。
+        if "\0" in path:
+            raise ValueError("文件路径包含非法字符（空字节）")
         file_path = Path(path)
     elif isinstance(path, PathLike):
         # PathLike 统一转换为 Path，便于后续进行文件类型判断和读取。
@@ -41,15 +44,15 @@ def read_file_content(path: str | PathLike[str], *, encoding: str = "utf-8") -> 
     else:
         raise TypeError("文件路径必须是字符串或路径对象")
 
-    # 解析为绝对路径，防止相对路径绕过目录检查。
+    # 解析为绝对路径，防止相对路径或符号链接绕过目录检查。
     resolved = file_path.resolve()
 
-    # 只允许读取 tests/ 目录下的文件。
+    # 只允许读取 tests/ 目录下的文件，任何越权尝试均拒绝。
     try:
         resolved.relative_to(_ALLOWED_DIR.resolve())
     except ValueError:
         raise ValueError(
-            f"不允许读取该路径的文件，仅允许读取 tests/ 目录: {file_path}"
+            f"不允许读取该路径（试图访问 tests/ 目录之外的文件）: {file_path}"
         ) from None
 
     # read_text 对目录的报错依赖操作系统；此处统一成明确的参数错误信息。

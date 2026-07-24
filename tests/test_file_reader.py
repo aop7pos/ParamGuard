@@ -42,6 +42,11 @@ class ReadFileContentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "不能为空"):
             read_file_content("  ")
 
+    def test_rejects_null_byte_in_path(self) -> None:
+        """路径中包含空字节（\0）属于非法输入，应被拦截。"""
+        with self.assertRaisesRegex(ValueError, "非法字符"):
+            read_file_content("tests/good.txt\0hidden.txt")
+
     def test_rejects_directory(self) -> None:
         """目录不是文本文件，不能作为读取目标。"""
         with tempfile.TemporaryDirectory(dir=_TESTS_DIR) as directory:
