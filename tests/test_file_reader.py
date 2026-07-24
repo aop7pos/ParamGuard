@@ -30,11 +30,11 @@ class ReadFileContentTests(unittest.TestCase):
             self.assertEqual(read_file_content(str(file_path)), "hello")
 
     def test_raises_for_missing_file(self) -> None:
-        """不存在的文件不能被静默忽略。"""
+        """不存在的文件不能被静默忽略，并给出清晰的中文错误。"""
         with tempfile.TemporaryDirectory(dir=_TESTS_DIR) as directory:
             missing_path = Path(directory) / "missing.txt"
 
-            with self.assertRaises(FileNotFoundError):
+            with self.assertRaisesRegex(FileNotFoundError, "文件不存在"):
                 read_file_content(missing_path)
 
     def test_rejects_empty_path(self) -> None:

@@ -56,5 +56,9 @@ def read_file_content(path: str | PathLike[str], *, encoding: str = "utf-8") -> 
     if resolved.is_dir():
         raise ValueError(f"指定路径是目录，无法读取文件内容: {file_path}")
 
-    # pathlib 会自动关闭文件句柄，并将不存在、权限、解码等异常原样交给调用方处理。
+    # 文件不存在时给出清晰的中文错误信息，而不是依赖 pathlib 的英文异常。
+    if not resolved.is_file():
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+
+    # pathlib 会自动关闭文件句柄，并将权限、解码等异常原样交给调用方处理。
     return resolved.read_text(encoding=encoding)
